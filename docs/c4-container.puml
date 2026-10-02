@@ -1,0 +1,90 @@
+@startuml c4-container
+!include <C4/C4_Container>
+
+title Маркетплейс — C4 Container diagram
+
+LAYOUT_TOP_DOWN()
+AddRelTag("async", $lineStyle = DashedLine(), $legendText = "асинхронно (Kafka)")
+
+Person(buyer, "Покупатель", "Смотрит ленту товаров, оформляет заказы")
+Person(seller, "Продавец", "Размещает товары и управляет ими")
+
+System_Ext(psp, "Платёжный провайдер", "Приём оплат")
+System_Ext(messaging, "Email / SMS / Push", "Доставка уведомлений")
+
+System_Boundary(mp, "Маркетплейс") {
+    Container(web, "Web / Mobile App", "SPA / Mobile", "Интерфейс покупателя и продавца")
+    Container(gateway, "API Gateway", "Nginx", "Единая точка входа, маршрутизация, проверка токена")
+
+    Boundary(b_user, "Домен: Пользователи") {
+        Container(user_svc, "User Service", "Go", "Регистрация, вход, роли, профили покупателей и продавцов")
+        ContainerDb(user_db, "User DB", "PostgreSQL", "Аккаунты, роли, профили")
+    }
+
+    Boundary(b_catalog, "Домены: Каталог + Остатки") {
+        Container(catalog_svc, "Catalog Service", "Go", "Товары продавцов, цены, остатки, резервы")
+        ContainerDb(catalog_db, "Catalog DB", "PostgreSQL", "Источник правды: товары, цены, остатки, резервы")
+        ContainerDb(catalog_cache, "Catalog Cache", "Redis", "Кеш карточек товаров")
+        ContainerDb(media, "Media Storage", "S3", "Фото товаров")
+    }
+
+    Boundary(b_feed, "Домен: Лента") {
+        Container(feed_svc, "Feed Service", "Go", "Персонализированная лента товаров")
+        ContainerDb(feed_db, "Feed DB", "PostgreSQL", "Копия каталога, интересы пользователей")
+        ContainerDb(feed_cache, "Feed Cache", "Redis", "Готовые ленты")
+    }
+
+    Boundary(b_order, "Домены: Корзина + Заказы") {
+        Container(order_svc, "Order Service", "Go", "Корзина, оформление заказа, статусы")
+        ContainerDb(cart_db, "Cart Store", "Redis", "Корзины (TTL 30 дней)")
+        ContainerDb(order_db, "Order DB", "PostgreSQL", "Заказы, история статусов")
+    }
+
+    Boundary(b_payment, "Домен: Платежи") {
+        Container(payment_svc, "Payment Service", "Go", "Оплата, возвраты, учёт денег")
+        ContainerDb(payment_db, "Payment DB", "PostgreSQL", "Платежи, возвраты, проводки")
+    }
+
+    Boundary(b_notif, "Домен: Уведомления") {
+        Container(notif_svc, "Notification Service", "Go", "Уведомления о статусах заказов")
+        ContainerDb(notif_db, "Notification DB", "PostgreSQL", "Шаблоны, контакты, журнал отправок")
+    }
+
+    ContainerQueue(broker, "Message Broker", "Kafka", "События: товары, заказы, платежи")
+}
+
+Rel(buyer, web, "Использует")
+Rel(seller, web, "Использует")
+Rel(web, gateway, "API-запросы")
+
+Rel(gateway, user_svc, "", "sync")
+Rel(gateway, catalog_svc, "", "sync")
+Rel(gateway, feed_svc, "", "sync")
+Rel(gateway, order_svc, "", "sync")
+Rel(gateway, payment_svc, "", "sync")
+
+Rel(user_svc, user_db, "")
+Rel(catalog_svc, catalog_db, "")
+Rel(catalog_svc, catalog_cache, "")
+Rel(catalog_svc, media, "")
+Rel(feed_svc, feed_db, "")
+Rel(feed_svc, feed_cache, "")
+Rel(order_svc, cart_db, "")
+Rel(order_svc, order_db, "")
+Rel(payment_svc, payment_db, "")
+Rel(notif_svc, notif_db, "")
+
+Rel(order_svc, catalog_svc, "Проверка товара и цены, резерв", "sync")
+Rel(order_svc, payment_svc, "Создать платёж", "sync")
+Rel(payment_svc, psp, "Проведение оплаты", "sync")
+Rel(notif_svc, messaging, "Отправка", "sync")
+
+Rel_D(user_svc, broker, "Пользователь создан/изменён", "async", $tags = "async")
+BiRel_D(catalog_svc, broker, "→ товар изменён\n← заказ отменён: снять резерв", "async", $tags = "async")
+BiRel_D(order_svc, broker, "→ статус заказа изменён\n← результат оплаты", "async", $tags = "async")
+Rel_D(payment_svc, broker, "Оплата прошла / не прошла", "async", $tags = "async")
+Rel_D(broker, feed_svc, "Товары, покупки", "async", $tags = "async")
+Rel_D(broker, notif_svc, "Пользователи, статусы заказов", "async", $tags = "async")
+
+SHOW_LEGEND()
+@enduml

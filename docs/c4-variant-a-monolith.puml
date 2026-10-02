@@ -1,0 +1,56 @@
+@startuml c4-variant-a-monolith
+!include <C4/C4_Component>
+
+title Вариант A — модульный монолит
+
+LAYOUT_TOP_DOWN()
+
+Person(buyer, "Покупатель")
+Person(seller, "Продавец")
+
+System_Ext(psp, "Платёжный провайдер")
+System_Ext(messaging, "Email / SMS / Push")
+
+System_Boundary(mp, "Маркетплейс") {
+    Container(web, "Web / Mobile App", "SPA / Mobile", "Интерфейс покупателя и продавца")
+
+    Container_Boundary(app, "Marketplace App — одно приложение, один деплой") {
+        Component(api, "HTTP API", "Go package", "Маршрутизация запросов в модули")
+        Component(m_user, "Модуль Users", "Go package", "Пользователи")
+        Component(m_catalog, "Модуль Catalog", "Go package", "Каталог + Остатки")
+        Component(m_feed, "Модуль Feed", "Go package", "Лента")
+        Component(m_order, "Модуль Orders", "Go package", "Корзина + Заказы")
+        Component(m_payment, "Модуль Payments", "Go package", "Платежи")
+        Component(m_notif, "Модуль Notifications", "Go package", "Уведомления")
+    }
+
+    ContainerDb(db, "Marketplace DB", "PostgreSQL", "Одна БД, у каждого модуля своя схема")
+    ContainerDb(cache, "Cache", "Redis", "Корзины, ленты, кеш карточек")
+}
+
+Rel(buyer, web, "Использует")
+Rel(seller, web, "Использует")
+Rel(web, api, "API-запросы", "sync")
+Rel(api, m_user, "", "in-process")
+Rel(api, m_catalog, "", "in-process")
+Rel(api, m_feed, "", "in-process")
+Rel(api, m_order, "", "in-process")
+
+Rel(m_order, m_catalog, "Вызов функции", "in-process")
+Rel(m_order, m_payment, "Вызов функции", "in-process")
+Rel(m_order, m_notif, "Вызов функции", "in-process")
+Rel(m_order, m_feed, "Вызов функции", "in-process")
+
+Rel(m_user, db, "")
+Rel(m_catalog, db, "")
+Rel(m_order, db, "")
+Rel(m_payment, db, "")
+Rel(m_notif, db, "")
+Rel(m_feed, cache, "")
+Rel(m_order, cache, "")
+
+Rel(m_payment, psp, "Проведение оплаты", "sync")
+Rel(m_notif, messaging, "Отправка", "sync")
+
+SHOW_LEGEND()
+@enduml
