@@ -1,18 +1,26 @@
 # ДЗ-2. Marketplace: OpenAPI + CRUD
 
-Go 1.26 · net/http · oapi-codegen · kin-openapi · PostgreSQL 17 · goose · pgx · JWT
+Go 1.26 · net/http · oapi-codegen · kin-openapi · PostgreSQL 17 · goose · database/sql (драйвер pgx)
 
 ## Запуск
 
 ```bash
 docker compose up --build          # postgres → app на :8080 (миграции применяются при старте)
-./demo.sh                          # все E2E-сценарии по порядку (нужны curl и jq)
 make psql                          # консоль БД для SELECT
 ```
 
-Если порт 8080 занят: `APP_PORT=18080 docker compose up --build` и `BASE=http://localhost:18080 ./demo.sh`.
+Если порт 8080 занят: `APP_PORT=18080 docker compose up --build`.
 
-Админ создаётся миграцией: `admin@example.com` / `admin123`. Через `/auth/register` можно получить только `USER` или `SELLER`.
+Пошаговый сценарий демонстрации — в [DEMO.md](DEMO.md).
+
+Аутентификации (JWT, логина, регистрации) в этом ДЗ нет. Кто делает запрос, передаётся заголовками:
+
+```
+X-User-Id:   3f1c...-uuid      # любой UUID
+X-User-Role: USER | SELLER | ADMIN
+```
+
+Оба заголовка описаны в OpenAPI как обязательные header-параметры у всех операций, кроме чтения товаров. Без них или с неверными значениями — `400 VALIDATION_ERROR`.
 
 Новая миграция: `make migration name=add_something`.
 
@@ -26,24 +34,23 @@ internal/api/generate.go      # //go:generate → api.gen.go (в .gitignore)
 internal/api/oapi-codegen.yaml
 internal/app/
   server.go                   # сборка цепочки middleware
-  middleware.go               # JSON-логи, JWT-авторизация
+  middleware.go               # JSON-логи
   validation.go               # валидация запросов по OpenAPI → VALIDATION_ERROR
   errors.go                   # AppError → JSON единого формата
-  auth.go                     # register / login / refresh
   products.go                 # CRUD товаров
   orders.go                   # заказы: создание, обновление, отмена
   promo_codes.go              # промокоды и расчёт скидки
-migrations/                   # goose: 00001_init_schema.sql, 00002_seed_admin.sql (+ embed.go)
+migrations/                   # goose: 00001_init_schema.sql (+ embed.go)
 cmd/marketplace/main.go       # конфиг из env, подключение к БД, запуск HTTP
-demo.sh                       # E2E-сценарии
+DEMO.md                       # сценарий демонстрации вручную
 ```
 
 ## Путь запроса
 
 ```
-HTTP → loggingMiddleware → authMiddleware → OpenAPI-валидатор → сгенерированный роутер → метод Server
-          request_id,         JWT → user       400 VALIDATION_ERROR    разбирает JSON в       бизнес-логика,
-          JSON-лог             в контекст       до бизнес-логики        сгенерированные DTO     возвращает DTO или AppError
+HTTP → loggingMiddleware → OpenAPI-валидатор → сгенерированный роутер → метод Server
+          request_id,         400 VALIDATION_ERROR   разбирает JSON и заголовки   бизнес-логика,
+          JSON-лог            до бизнес-логики       в сгенерированные DTO        возвращает DTO или AppError
 ```
 
 ## Соответствие пунктам задания
@@ -57,9 +64,8 @@ HTTP → loggingMiddleware → authMiddleware → OpenAPI-валидатор →
 | 5 | Единый формат `{error_code, message, details}`, все коды в `ErrorCode` enum | `errors.go`, `api/openapi.yaml` |
 | 6 | Ограничения в спецификации, проверка middleware'ом kin-openapi, в `details.errors` — поле и нарушение | `validation.go` |
 | 7 | Заказы: проверки по порядку, транзакции, `FOR UPDATE`, снапшот цены, промокоды, state machine | `orders.go`, `promo_codes.go` |
-| 8 | JSON-логи с `request_id, method, endpoint, status_code, duration_ms, user_id, timestamp`, тело запроса с маскировкой паролей, `X-Request-Id` | `middleware.go` |
-| 9 | Access 15 мин / refresh 7 дней, `TOKEN_EXPIRED`, `TOKEN_INVALID`, `REFRESH_TOKEN_INVALID` | `auth.go`, `middleware.go` |
-| 10 | Роли `USER/SELLER/ADMIN` в claim `role`, `seller_id`, `ACCESS_DENIED`, матрица в OpenAPI | `products.go`, `orders.go`, `api/openapi.yaml` |
+| 8 | JSON-логи с `request_id, method, endpoint, status_code, duration_ms, user_id, timestamp`, тело POST/PUT/DELETE, `X-Request-Id` | `middleware.go` |
+| 10 | Роли `USER/SELLER/ADMIN` из заголовка `X-User-Role`, `seller_id`, `ACCESS_DENIED`, матрица в OpenAPI | `products.go`, `orders.go`, `api/openapi.yaml` |
 
 ## Принятые решения
 
@@ -67,12 +73,12 @@ HTTP → loggingMiddleware → authMiddleware → OpenAPI-валидатор →
 - **Ошибки как `error`.** Хендлер возвращает `*AppError` с HTTP-статусом и кодом. `ResponseErrorHandlerFunc` пишет его в формате схемы `Error`. Любая другая ошибка превращается в 500 `INTERNAL_ERROR`, детали попадают только в лог.
 - **Валидация из спецификации, без ручных `if`.** Middleware `nethttp-middleware` (kin-openapi) проверяет запрос по `openapi.yaml`. При `MultiError: true` собираются все нарушения сразу. Вручную проверяется только то, что нельзя описать в OpenAPI: `valid_until > valid_from` и процент не больше 100.
 - **Деньги — `decimal.Decimal`, а не float.** `0.1 + 0.2 != 0.3` во float. В БД `DECIMAL(12,2)`, в Go `shopspring/decimal`, в спецификации `x-go-type`.
-- **Транзакции и блокировки.** Каждая операция с заказом идёт в `pgx.BeginFunc`: ошибка даёт ROLLBACK, успех — COMMIT. `SELECT ... FOR UPDATE` блокирует строки товаров, промокода и заказа, чтобы два параллельных заказа не списали один и тот же остаток. Товары блокируются в порядке id, иначе возможен deadlock. Строка пользователя тоже блокируется, поэтому два одновременных запроса одного пользователя не обойдут rate limit.
+- **Транзакции и блокировки.** Каждая операция с заказом: `tx := db.Begin()`, `defer tx.Rollback()`, в конце `tx.Commit()`. Если функция вышла с ошибкой до Commit, срабатывает Rollback и в БД ничего не меняется. `SELECT ... FOR UPDATE` блокирует строки товаров, промокода и заказа до конца транзакции, чтобы два параллельных заказа не списали один и тот же остаток.
 - **Одинаковые `product_id` в заказе суммируются** в одну позицию, чтобы остаток проверялся по общему количеству.
 - **Скидка PERCENTAGE.** В задании написано: «не более 70% от total_amount, в ином случае цена 100%». Реализовано буквально: если скидка больше 70%, она не применяется. Это одна строка в `calcDiscount` (`promo_codes.go`).
 - **Обновление заказа и промокод.** Если промокод перестал подходить (сумма меньше минимальной, истёк или деактивирован), он снимается с заказа, а `current_uses` уменьшается на 1. `current_uses < max_uses` повторно не проверяется: этот заказ уже занимает одно использование.
 - **Rate limit для ADMIN** считается по тому, кто выполняет операцию.
-- **Refresh** берёт роль из БД, а не из старого токена: роль могла измениться. Поле `type` в JWT не даёт подставить refresh token вместо access.
+- **Пользователь из заголовков.** Аутентификация вне рамок ДЗ. `X-User-Id` и `X-User-Role` описаны в спецификации, поэтому их проверяет тот же валидатор, а сгенерированный код кладёт их в `req.Params`. Таблицы `users` нет: `user_id` и `seller_id` — просто UUID.
 - **Миграции через goose** — стандартный для Go инструмент (аналог alembic в Python). SQL-файлы встроены в бинарник через `//go:embed`, приложение при старте вызывает `goose.Up`: применяет новые миграции и пропускает уже применённые. Отдельный контейнер не нужен. У каждой миграции есть секция `Down` для отката.
 
 ## Шпаргалка к теоретическим вопросам
@@ -83,8 +89,7 @@ HTTP → loggingMiddleware → authMiddleware → OpenAPI-валидатор →
 - **Индекс.** B-tree по `status` ускоряет `WHERE status = ...`. Цена — более медленная запись и место на диске.
 - **Миграции (goose).** Файлы `00001_name.sql` с секциями `-- +goose Up` и `-- +goose Down`. Применённые версии хранятся в таблице `goose_db_version`. Уже применённую миграцию не редактируют, пишут новую (`make migration name=...`). `StatementBegin/End` нужен, когда внутри одной команды есть `;` (тело plpgsql-функции).
 - **Транзакция, ACID.** Резерв остатков и создание заказа атомарны. `FOR UPDATE` — пессимистичная блокировка строки до конца транзакции.
-- **JWT.** `header.payload.signature`, подпись HS256 общим секретом. Сервер ничего не хранит. Access живёт недолго, чтобы ограничить ущерб от утечки; refresh — долго, чтобы не логиниться заново. Пароли хранятся как bcrypt-хеш с солью.
-- **401 и 403.** 401 — «кто ты?»: нет токена или он невалиден. 403 — «знаю, кто ты, но нельзя».
+- **403.** «Знаю, кто ты, но тебе нельзя»: роль не подходит (`ACCESS_DENIED`) или заказ чужой (`ORDER_OWNERSHIP_VIOLATION`).
 - **429.** Too Many Requests — превышен лимит частоты.
 - **409 и 422.** 409 — конфликт с текущим состоянием ресурса (статус, остатки). 422 — запрос синтаксически верен, но не проходит бизнес-правило (промокод).
 - **`X-Request-Id`.** Сквозной идентификатор, по которому запрос можно найти в логах.

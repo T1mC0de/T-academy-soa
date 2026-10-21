@@ -15,7 +15,6 @@ services:
     build: .
     environment:
       DATABASE_URL: postgres://marketplace:marketplace@postgres:5432/marketplace
-      JWT_SECRET: super-secret-key-for-homework
       ORDER_RATE_LIMIT_MINUTES: ${ORDER_RATE_LIMIT_MINUTES:-1}
     ports:
       - "${APP_PORT:-8080}:8080"

@@ -2,33 +2,33 @@ package app
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"marketplace/internal/api"
 )
 
+// Колонки промокода в том порядке, в котором их читает scanPromo.
 const promoColumns = `id, code, discount_type, discount_value, min_order_amount, max_uses, current_uses, valid_from, valid_until, active`
 
-func scanPromo(row pgx.Row) (api.PromoCodeResponse, error) {
+func scanPromo(row scanner) (api.PromoCodeResponse, error) {
 	var p api.PromoCodeResponse
 	err := row.Scan(&p.Id, &p.Code, &p.DiscountType, &p.DiscountValue, &p.MinOrderAmount, &p.MaxUses, &p.CurrentUses, &p.ValidFrom, &p.ValidUntil, &p.Active)
 	return p, err
 }
 
+// POST /promo-codes
 func (s *Server) CreatePromoCode(ctx context.Context, req api.CreatePromoCodeRequestObject) (api.CreatePromoCodeResponseObject, error) {
-	user := currentUser(ctx)
-	if user.Role != api.RoleSELLER && user.Role != api.RoleADMIN {
+	role := req.Params.XUserRole
+	if role != api.SELLER && role != api.ADMIN {
 		return nil, errAccessDenied()
 	}
 
-	// Ограничения, которые нельзя выразить в OpenAPI (зависят от нескольких полей).
+	// Проверки, которые нельзя описать в OpenAPI: они зависят от двух полей сразу.
 	b := req.Body
 	var violations []map[string]string
 	if !b.ValidUntil.After(b.ValidFrom) {
@@ -38,56 +38,68 @@ func (s *Server) CreatePromoCode(ctx context.Context, req api.CreatePromoCodeReq
 		violations = append(violations, map[string]string{"field": "discount_value", "message": "percentage must be at most 100"})
 	}
 	if len(violations) > 0 {
-		return nil, errValidation("request validation failed", violations)
+		return nil, errValidation(violations)
 	}
 
+	// Код промокода должен быть уникальным.
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM promo_codes WHERE code = $1)`, b.Code).Scan(&exists)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, newError(http.StatusConflict, api.PROMOCODEALREADYEXISTS, "promo code already exists")
+	}
+
+	// active необязательное, по умолчанию true.
 	active := true
 	if b.Active != nil {
 		active = *b.Active
 	}
 
-	promo, err := scanPromo(s.db.QueryRow(ctx,
+	promo, err := scanPromo(s.db.QueryRow(
 		`INSERT INTO promo_codes (code, discount_type, discount_value, min_order_amount, max_uses, valid_from, valid_until, active)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING `+promoColumns,
 		b.Code, b.DiscountType, b.DiscountValue, b.MinOrderAmount, b.MaxUses, b.ValidFrom, b.ValidUntil, active,
 	))
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
-		return nil, newError(http.StatusConflict, api.PROMOCODEALREADYEXISTS, "promo code already exists")
-	}
 	if err != nil {
 		return nil, err
 	}
 	return api.CreatePromoCode201JSONResponse(promo), nil
 }
 
-// lockPromoByCode / lockPromoByID читают промокод с блокировкой строки (FOR UPDATE),
-// чтобы два параллельных заказа не «перерасходовали» max_uses.
-func lockPromoByCode(ctx context.Context, tx pgx.Tx, code string) (api.PromoCodeResponse, error) {
-	return scanPromo(tx.QueryRow(ctx, `SELECT `+promoColumns+` FROM promo_codes WHERE code = $1 FOR UPDATE`, code))
+// lockPromoByCode и lockPromoByID читают промокод и блокируют его строку (FOR UPDATE),
+// чтобы два параллельных заказа не превысили max_uses.
+func lockPromoByCode(tx *sql.Tx, code string) (api.PromoCodeResponse, error) {
+	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE code = $1 FOR UPDATE`, code))
 }
 
-func lockPromoByID(ctx context.Context, tx pgx.Tx, id uuid.UUID) (api.PromoCodeResponse, error) {
-	return scanPromo(tx.QueryRow(ctx, `SELECT `+promoColumns+` FROM promo_codes WHERE id = $1 FOR UPDATE`, id))
+func lockPromoByID(tx *sql.Tx, id uuid.UUID) (api.PromoCodeResponse, error) {
+	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE id = $1 FOR UPDATE`, id))
 }
 
-// promoActiveNow: активен и текущее время в [valid_from, valid_until].
+// promoActiveNow: промокод включён и сейчас в интервале [valid_from, valid_until].
 func promoActiveNow(p api.PromoCodeResponse) bool {
 	now := time.Now()
-	return p.Active && !now.Before(p.ValidFrom) && !now.After(p.ValidUntil)
+	started := !now.Before(p.ValidFrom)  // now >= valid_from
+	notEnded := !now.After(p.ValidUntil) // now <= valid_until
+	return p.Active && started && notEnded
 }
 
 // calcDiscount считает скидку по правилам задания.
 func calcDiscount(p api.PromoCodeResponse, total decimal.Decimal) decimal.Decimal {
+	// FIXED_AMOUNT: скидка = discount_value, но не больше суммы заказа.
 	if p.DiscountType == api.FIXEDAMOUNT {
 		return decimal.Min(p.DiscountValue, total)
 	}
 
-	// PERCENTAGE: total * value / 100, округляем до копеек.
+	// PERCENTAGE: скидка = total * discount_value / 100, округляем до копеек.
 	discount := total.Mul(p.DiscountValue).Div(decimal.NewFromInt(100)).Round(2)
-	// По заданию: скидка не более 70% от суммы, иначе скидка не применяется (цена остаётся 100%).
-	if discount.GreaterThan(total.Mul(decimal.RequireFromString("0.7"))) {
+
+	// По заданию скидка не больше 70% от суммы, иначе скидка не применяется (цена остаётся 100%).
+	maxDiscount := total.Mul(decimal.NewFromInt(70)).Div(decimal.NewFromInt(100))
+	if discount.GreaterThan(maxDiscount) {
 		return decimal.Zero
 	}
 	return discount

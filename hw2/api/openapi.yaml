@@ -3,10 +3,12 @@ info:
   title: Marketplace API
   version: 1.0.0
   description: |
-    API маркетплейса: товары, заказы, промокоды, авторизация.
+    API маркетплейса: товары, заказы, промокоды.
 
-    Все эндпоинты, кроме `/auth/*`, требуют заголовок `Authorization: Bearer <access_token>`.
-    Роль пользователя берётся из claim `role` JWT-токена (`USER`, `SELLER`, `ADMIN`).
+    Аутентификации в сервисе нет. Кто выполняет запрос, передаётся заголовками
+    `X-User-Id` (UUID пользователя) и `X-User-Role` (`USER`, `SELLER`, `ADMIN`).
+    Чтение товаров (`GET /products`, `GET /products/{id}`) доступно без них,
+    остальные операции требуют оба заголовка, иначе `400 VALIDATION_ERROR`.
 
     Матрица доступа:
 
@@ -23,108 +25,21 @@ info:
     | `POST /orders/{id}/cancel` | Только свои | Запрещено   | Любые       |
     | `POST /promo-codes`        | Запрещено   | Да          | Да          |
 
-# По умолчанию все операции требуют JWT. Для /auth/* переопределено на `security: []`.
-security:
-  - bearerAuth: []
-
 tags:
-  - name: auth
   - name: products
   - name: orders
   - name: promo-codes
 
 paths:
-  /auth/register:
-    post:
-      tags: [auth]
-      operationId: register
-      summary: Регистрация пользователя
-      description: Можно зарегистрироваться с ролью `USER` (по умолчанию) или `SELLER`. Пользователь `ADMIN` создаётся миграцией.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-      responses:
-        '201':
-          description: Пользователь создан
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '409':
-          description: "`EMAIL_ALREADY_EXISTS`"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /auth/login:
-    post:
-      tags: [auth]
-      operationId: login
-      summary: Аутентификация, возвращает access + refresh token
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-      responses:
-        '200':
-          description: Пара токенов
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          description: "`INVALID_CREDENTIALS`"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /auth/refresh:
-    post:
-      tags: [auth]
-      operationId: refresh
-      summary: Обновление access token по refresh token
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RefreshRequest'
-      responses:
-        '200':
-          description: Новая пара токенов
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          description: "`REFRESH_TOKEN_INVALID`"
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
   /products:
     post:
       tags: [products]
       operationId: createProduct
       summary: Создание товара
       description: "Роли: `SELLER` (товар создаётся от его имени), `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -140,8 +55,6 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
     get:
@@ -187,8 +100,6 @@ paths:
                 $ref: '#/components/schemas/ProductPage'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
 
   /products/{id}:
     parameters:
@@ -207,8 +118,6 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/ProductNotFound'
     put:
@@ -216,6 +125,9 @@ paths:
       operationId: updateProduct
       summary: Обновление товара
       description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые)."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -231,8 +143,6 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -242,6 +152,9 @@ paths:
       operationId: deleteProduct
       summary: Мягкое удаление (перевод в статус ARCHIVED)
       description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые). Запись не удаляется, статус меняется на `ARCHIVED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       responses:
         '200':
           description: Товар в статусе ARCHIVED
@@ -251,8 +164,6 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -264,6 +175,9 @@ paths:
       operationId: createOrder
       summary: Создание заказа
       description: "Роли: `USER`, `ADMIN`. `SELLER` → 403 `ACCESS_DENIED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -279,8 +193,6 @@ paths:
                 $ref: '#/components/schemas/OrderResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -304,6 +216,9 @@ paths:
       operationId: getOrder
       summary: Получение заказа по ID
       description: "Роли: `USER` (только свои), `ADMIN` (любые). `SELLER` → 403 `ACCESS_DENIED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       responses:
         '200':
           description: Заказ
@@ -313,8 +228,6 @@ paths:
                 $ref: '#/components/schemas/OrderResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/OrderForbidden'
         '404':
@@ -324,6 +237,9 @@ paths:
       operationId: updateOrder
       summary: Обновление позиций заказа
       description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено только в статусе `CREATED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -339,8 +255,6 @@ paths:
                 $ref: '#/components/schemas/OrderResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/OrderForbidden'
         '404':
@@ -366,6 +280,9 @@ paths:
       operationId: cancelOrder
       summary: Отмена заказа
       description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено из статусов `CREATED`, `PAYMENT_PENDING`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       responses:
         '200':
           description: Заказ отменён
@@ -375,8 +292,6 @@ paths:
                 $ref: '#/components/schemas/OrderResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/OrderForbidden'
         '404':
@@ -394,6 +309,9 @@ paths:
       operationId: createPromoCode
       summary: Создание промокода
       description: "Роли: `SELLER`, `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -409,8 +327,6 @@ paths:
                 $ref: '#/components/schemas/PromoCodeResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
@@ -421,14 +337,22 @@ paths:
                 $ref: '#/components/schemas/Error'
 
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: "Access token (живёт 15 минут). Claims: `sub` — id пользователя, `role` — роль, `type` — `access`."
-
   parameters:
+    UserId:
+      name: X-User-Id
+      in: header
+      required: true
+      description: ID пользователя, от имени которого выполняется запрос
+      schema:
+        type: string
+        format: uuid
+    UserRole:
+      name: X-User-Role
+      in: header
+      required: true
+      description: Роль пользователя
+      schema:
+        $ref: '#/components/schemas/Role'
     Id:
       name: id
       in: path
@@ -451,12 +375,6 @@ components:
               errors:
                 - field: price
                   message: number must be at least 0.01
-    Unauthorized:
-      description: "`TOKEN_EXPIRED` или `TOKEN_INVALID`"
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
     Forbidden:
       description: "`ACCESS_DENIED` — недостаточно прав"
       content:
@@ -510,12 +428,7 @@ components:
         - PROMO_CODE_MIN_AMOUNT       # 422
         - ORDER_OWNERSHIP_VIOLATION   # 403
         - VALIDATION_ERROR            # 400
-        - TOKEN_EXPIRED               # 401
-        - TOKEN_INVALID               # 401
-        - REFRESH_TOKEN_INVALID       # 401
-        - INVALID_CREDENTIALS         # 401
         - ACCESS_DENIED               # 403
-        - EMAIL_ALREADY_EXISTS        # 409
         - PROMO_CODE_ALREADY_EXISTS   # 409
         - NOT_FOUND                   # 404 (несуществующий путь)
         - INTERNAL_ERROR              # 500
@@ -536,76 +449,10 @@ components:
           additionalProperties: true
           description: Дополнительные данные (например, список нарушений валидации или нехватки остатков)
 
-    # ---------- Auth ----------
+    # ---------- Пользователь ----------
     Role:
       type: string
       enum: [USER, SELLER, ADMIN]
-
-    RegisterRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          maxLength: 255
-        password:
-          type: string
-          minLength: 6
-          maxLength: 72
-        role:
-          type: string
-          description: Роль. ADMIN через регистрацию получить нельзя.
-          enum: [USER, SELLER]
-          default: USER
-
-    LoginRequest:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          maxLength: 255
-        password:
-          type: string
-          minLength: 1
-          maxLength: 72
-
-    RefreshRequest:
-      type: object
-      required: [refresh_token]
-      properties:
-        refresh_token:
-          type: string
-          minLength: 1
-
-    TokenResponse:
-      type: object
-      required: [access_token, refresh_token, token_type, expires_in]
-      properties:
-        access_token:
-          type: string
-        refresh_token:
-          type: string
-        token_type:
-          type: string
-          example: Bearer
-        expires_in:
-          type: integer
-          description: Время жизни access token в секундах
-
-    UserResponse:
-      type: object
-      required: [id, email, role]
-      properties:
-        id:
-          type: string
-          format: uuid
-        email:
-          type: string
-        role:
-          $ref: '#/components/schemas/Role'
 
     # ---------- Products ----------
     ProductStatus:

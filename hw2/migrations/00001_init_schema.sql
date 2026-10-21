@@ -1,4 +1,5 @@
 -- Начальная схема маркетплейса.
+-- Таблицы пользователей нет: user_id и seller_id приходят из заголовка X-User-Id.
 
 -- +goose Up
 -- Общая функция для автоматического обновления updated_at.
@@ -11,20 +12,10 @@ END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
 
-CREATE TYPE user_role       AS ENUM ('USER', 'SELLER', 'ADMIN');
 CREATE TYPE product_status  AS ENUM ('ACTIVE', 'INACTIVE', 'ARCHIVED');
 CREATE TYPE order_status    AS ENUM ('CREATED', 'PAYMENT_PENDING', 'PAID', 'SHIPPED', 'COMPLETED', 'CANCELED');
 CREATE TYPE discount_type   AS ENUM ('PERCENTAGE', 'FIXED_AMOUNT');
 CREATE TYPE operation_type  AS ENUM ('CREATE_ORDER', 'UPDATE_ORDER');
-
-CREATE TABLE users (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email         VARCHAR(255) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    role          user_role    NOT NULL DEFAULT 'USER',
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
 
 CREATE TABLE products (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -34,7 +25,7 @@ CREATE TABLE products (
     stock       INTEGER        NOT NULL CHECK (stock >= 0),
     category    VARCHAR(100)   NOT NULL,
     status      product_status NOT NULL,
-    seller_id   UUID           NOT NULL REFERENCES users (id),
+    seller_id   UUID           NOT NULL,
     created_at  TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
@@ -57,7 +48,7 @@ CREATE TABLE promo_codes (
 
 CREATE TABLE orders (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID           NOT NULL REFERENCES users (id),
+    user_id         UUID           NOT NULL,
     status          order_status   NOT NULL DEFAULT 'CREATED',
     promo_code_id   UUID           REFERENCES promo_codes (id),
     total_amount    DECIMAL(12, 2) NOT NULL,
@@ -80,14 +71,13 @@ CREATE INDEX idx_order_items_order ON order_items (order_id);
 
 CREATE TABLE user_operations (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id        UUID           NOT NULL REFERENCES users (id),
+    user_id        UUID           NOT NULL,
     operation_type operation_type NOT NULL,
     created_at     TIMESTAMPTZ    NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_user_operations_lookup ON user_operations (user_id, operation_type, created_at DESC);
 
-CREATE TRIGGER users_set_updated_at    BEFORE UPDATE ON users    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER products_set_updated_at BEFORE UPDATE ON products FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE TRIGGER orders_set_updated_at   BEFORE UPDATE ON orders   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
@@ -97,10 +87,8 @@ DROP TABLE order_items;
 DROP TABLE orders;
 DROP TABLE promo_codes;
 DROP TABLE products;
-DROP TABLE users;
 DROP TYPE operation_type;
 DROP TYPE discount_type;
 DROP TYPE order_status;
 DROP TYPE product_status;
-DROP TYPE user_role;
 DROP FUNCTION set_updated_at();
