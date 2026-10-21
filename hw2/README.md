@@ -11,6 +11,8 @@ make psql                          # консоль БД для SELECT
 
 Если порт 8080 занят: `APP_PORT=18080 docker compose up --build`.
 
+Swagger UI: http://localhost:8080/docs — документация по `api/openapi.yaml`, запросы можно отправлять кнопкой **Try it out**.
+
 Аутентификации (JWT, логина, регистрации) и ролей в этом ДЗ нет. Операциям с заказами нужно знать пользователя — он передаётся заголовком:
 
 ```
@@ -31,6 +33,7 @@ internal/api/generate.go      # //go:generate → api.gen.go (в .gitignore)
 internal/api/oapi-codegen.yaml
 internal/app/
   server.go                   # сборка цепочки middleware
+  docs.go                     # Swagger UI: /docs и /openapi.json
   middleware.go               # JSON-логи
   validation.go               # валидация запросов по OpenAPI → VALIDATION_ERROR
   errors.go                   # AppError → JSON единого формата

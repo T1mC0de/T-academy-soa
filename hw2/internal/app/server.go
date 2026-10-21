@@ -53,5 +53,13 @@ func (s *Server) Handler() (http.Handler, error) {
 		ErrorHandlerFunc: badRequest,
 	})
 
-	return loggingMiddleware(validator(router)), nil
+	apiHandler := loggingMiddleware(validator(router))
+
+	// Swagger UI — не часть API, поэтому эти два пути идут мимо валидатора.
+	// Всё остальное ("/") — в API.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /docs", swaggerUI)
+	mux.HandleFunc("GET /openapi.json", openAPISpec)
+	mux.Handle("/", apiHandler)
+	return mux, nil
 }
