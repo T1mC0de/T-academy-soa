@@ -56,7 +56,7 @@ func (s *Server) CreateOrder(ctx context.Context, req api.CreateOrderRequestObje
 	discount := decimal.Zero
 	var promoID *uuid.UUID // nil — промокода нет
 	if req.Body.PromoCode != nil {
-		promo, err := lockPromoByCode(tx, *req.Body.PromoCode)
+		promo, err := findPromoByCode(tx, *req.Body.PromoCode)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errPromoInvalid()
 		}
@@ -140,7 +140,7 @@ func (s *Server) UpdateOrder(ctx context.Context, req api.UpdateOrderRequestObje
 	}
 	defer tx.Rollback()
 
-	order, err := lockOrder(tx, req.Id)
+	order, err := findOrder(tx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func (s *Server) UpdateOrder(ctx context.Context, req api.UpdateOrderRequestObje
 	discount := decimal.Zero
 	promoID := order.promoCodeID
 	if promoID != nil {
-		promo, err := lockPromoByID(tx, *promoID)
+		promo, err := findPromoByID(tx, *promoID)
 		if err != nil {
 			return nil, err
 		}
@@ -234,7 +234,7 @@ func (s *Server) CancelOrder(ctx context.Context, req api.CancelOrderRequestObje
 	}
 	defer tx.Rollback()
 
-	order, err := lockOrder(tx, req.Id)
+	order, err := findOrder(tx, req.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -308,12 +308,10 @@ func reserveItems(tx *sql.Tx, items []api.OrderItemRequest) ([]orderLine, decima
 	}
 
 	// 3. Каждый товар существует и в статусе ACTIVE.
-	// FOR UPDATE блокирует строку товара до конца транзакции:
-	// параллельный заказ будет ждать и не спишет тот же остаток.
 	stocks := make([]int32, len(lines)) // текущий остаток каждого товара
 	for i := range lines {
 		var status api.ProductStatus
-		err := tx.QueryRow(`SELECT status, price, stock FROM products WHERE id = $1 FOR UPDATE`, lines[i].productID).
+		err := tx.QueryRow(`SELECT status, price, stock FROM products WHERE id = $1`, lines[i].productID).
 			Scan(&status, &lines[i].price, &stocks[i])
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, decimal.Zero, errProductNotFound(lines[i].productID)
@@ -429,10 +427,10 @@ type orderState struct {
 	promoCodeID *uuid.UUID // nil — промокода нет
 }
 
-// lockOrder читает заказ и блокирует его строку до конца транзакции (FOR UPDATE).
-func lockOrder(tx *sql.Tx, orderID uuid.UUID) (orderState, error) {
+// findOrder читает заказ внутри транзакции.
+func findOrder(tx *sql.Tx, orderID uuid.UUID) (orderState, error) {
 	var o orderState
-	err := tx.QueryRow(`SELECT user_id, status, promo_code_id FROM orders WHERE id = $1 FOR UPDATE`, orderID).
+	err := tx.QueryRow(`SELECT user_id, status, promo_code_id FROM orders WHERE id = $1`, orderID).
 		Scan(&o.userID, &o.status, &o.promoCodeID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, errOrderNotFound()

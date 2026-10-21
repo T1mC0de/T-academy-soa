@@ -64,14 +64,13 @@ func (s *Server) CreatePromoCode(ctx context.Context, req api.CreatePromoCodeReq
 	return api.CreatePromoCode201JSONResponse(promo), nil
 }
 
-// lockPromoByCode и lockPromoByID читают промокод и блокируют его строку (FOR UPDATE),
-// чтобы два параллельных заказа не превысили max_uses.
-func lockPromoByCode(tx *sql.Tx, code string) (api.PromoCodeResponse, error) {
-	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE code = $1 FOR UPDATE`, code))
+// findPromoByCode и findPromoByID читают промокод внутри транзакции заказа.
+func findPromoByCode(tx *sql.Tx, code string) (api.PromoCodeResponse, error) {
+	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE code = $1`, code))
 }
 
-func lockPromoByID(tx *sql.Tx, id uuid.UUID) (api.PromoCodeResponse, error) {
-	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE id = $1 FOR UPDATE`, id))
+func findPromoByID(tx *sql.Tx, id uuid.UUID) (api.PromoCodeResponse, error) {
+	return scanPromo(tx.QueryRow(`SELECT `+promoColumns+` FROM promo_codes WHERE id = $1`, id))
 }
 
 // promoActiveNow: промокод включён и сейчас в интервале [valid_from, valid_until].
