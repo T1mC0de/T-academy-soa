@@ -23,11 +23,6 @@ func scanPromo(row scanner) (api.PromoCodeResponse, error) {
 
 // POST /promo-codes
 func (s *Server) CreatePromoCode(ctx context.Context, req api.CreatePromoCodeRequestObject) (api.CreatePromoCodeResponseObject, error) {
-	role := req.Params.XUserRole
-	if role != api.SELLER && role != api.ADMIN {
-		return nil, errAccessDenied()
-	}
-
 	// Проверки, которые нельзя описать в OpenAPI: они зависят от двух полей сразу.
 	b := req.Body
 	var violations []map[string]string

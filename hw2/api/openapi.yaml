@@ -5,25 +5,9 @@ info:
   description: |
     API маркетплейса: товары, заказы, промокоды.
 
-    Аутентификации в сервисе нет. Кто выполняет запрос, передаётся заголовками
-    `X-User-Id` (UUID пользователя) и `X-User-Role` (`USER`, `SELLER`, `ADMIN`).
-    Чтение товаров (`GET /products`, `GET /products/{id}`) доступно без них,
-    остальные операции требуют оба заголовка, иначе `400 VALIDATION_ERROR`.
-
-    Матрица доступа:
-
-    | Операция                   | USER        | SELLER      | ADMIN       |
-    |----------------------------|-------------|-------------|-------------|
-    | `GET /products`            | Все товары  | Все товары  | Все товары  |
-    | `GET /products/{id}`       | Любой товар | Любой товар | Любой товар |
-    | `POST /products`           | Запрещено   | Только свои | Любые       |
-    | `PUT /products/{id}`       | Запрещено   | Только свои | Любые       |
-    | `DELETE /products/{id}`    | Запрещено   | Только свои | Любые       |
-    | `POST /orders`             | Да          | Запрещено   | Да          |
-    | `GET /orders/{id}`         | Только свои | Запрещено   | Любые       |
-    | `PUT /orders/{id}`         | Только свои | Запрещено   | Любые       |
-    | `POST /orders/{id}/cancel` | Только свои | Запрещено   | Любые       |
-    | `POST /promo-codes`        | Запрещено   | Да          | Да          |
+    Аутентификации и ролей в сервисе нет. Операции с заказами требуют заголовок
+    `X-User-Id` (UUID пользователя): по нему определяется владелец заказа
+    и считается ограничение частоты операций. Без него — `400 VALIDATION_ERROR`.
 
 tags:
   - name: products
@@ -36,10 +20,6 @@ paths:
       tags: [products]
       operationId: createProduct
       summary: Создание товара
-      description: "Роли: `SELLER` (товар создаётся от его имени), `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -55,13 +35,10 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '403':
-          $ref: '#/components/responses/Forbidden'
     get:
       tags: [products]
       operationId: listProducts
       summary: Список товаров с пагинацией и фильтрацией
-      description: "Роли: все."
       parameters:
         - name: page
           in: query
@@ -108,7 +85,6 @@ paths:
       tags: [products]
       operationId: getProduct
       summary: Получение товара по ID
-      description: "Роли: все."
       responses:
         '200':
           description: Товар
@@ -124,10 +100,7 @@ paths:
       tags: [products]
       operationId: updateProduct
       summary: Обновление товара
-      description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые)."
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
+      description: Полная замена полей товара.
       requestBody:
         required: true
         content:
@@ -143,18 +116,13 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '403':
-          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/ProductNotFound'
     delete:
       tags: [products]
       operationId: deleteProduct
       summary: Мягкое удаление (перевод в статус ARCHIVED)
-      description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые). Запись не удаляется, статус меняется на `ARCHIVED`."
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
+      description: "Запись не удаляется, статус меняется на `ARCHIVED`."
       responses:
         '200':
           description: Товар в статусе ARCHIVED
@@ -164,8 +132,6 @@ paths:
                 $ref: '#/components/schemas/ProductResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '403':
-          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/ProductNotFound'
 
@@ -174,10 +140,8 @@ paths:
       tags: [orders]
       operationId: createOrder
       summary: Создание заказа
-      description: "Роли: `USER`, `ADMIN`. `SELLER` → 403 `ACCESS_DENIED`."
       parameters:
         - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -193,8 +157,6 @@ paths:
                 $ref: '#/components/schemas/OrderResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '403':
-          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/ProductNotFound'
         '409':
@@ -215,10 +177,9 @@ paths:
       tags: [orders]
       operationId: getOrder
       summary: Получение заказа по ID
-      description: "Роли: `USER` (только свои), `ADMIN` (любые). `SELLER` → 403 `ACCESS_DENIED`."
+      description: "Только свой заказ, иначе 403 `ORDER_OWNERSHIP_VIOLATION`."
       parameters:
         - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       responses:
         '200':
           description: Заказ
@@ -236,10 +197,9 @@ paths:
       tags: [orders]
       operationId: updateOrder
       summary: Обновление позиций заказа
-      description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено только в статусе `CREATED`."
+      description: "Только свой заказ. Разрешено только в статусе `CREATED`."
       parameters:
         - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -279,10 +239,9 @@ paths:
       tags: [orders]
       operationId: cancelOrder
       summary: Отмена заказа
-      description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено из статусов `CREATED`, `PAYMENT_PENDING`."
+      description: "Только свой заказ. Разрешено из статусов `CREATED`, `PAYMENT_PENDING`."
       parameters:
         - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       responses:
         '200':
           description: Заказ отменён
@@ -308,10 +267,6 @@ paths:
       tags: [promo-codes]
       operationId: createPromoCode
       summary: Создание промокода
-      description: "Роли: `SELLER`, `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
-      parameters:
-        - $ref: '#/components/parameters/UserId'
-        - $ref: '#/components/parameters/UserRole'
       requestBody:
         required: true
         content:
@@ -327,8 +282,6 @@ paths:
                 $ref: '#/components/schemas/PromoCodeResponse'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '403':
-          $ref: '#/components/responses/Forbidden'
         '409':
           description: "`PROMO_CODE_ALREADY_EXISTS`"
           content:
@@ -346,13 +299,6 @@ components:
       schema:
         type: string
         format: uuid
-    UserRole:
-      name: X-User-Role
-      in: header
-      required: true
-      description: Роль пользователя
-      schema:
-        $ref: '#/components/schemas/Role'
     Id:
       name: id
       in: path
@@ -375,14 +321,8 @@ components:
               errors:
                 - field: price
                   message: number must be at least 0.01
-    Forbidden:
-      description: "`ACCESS_DENIED` — недостаточно прав"
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
     OrderForbidden:
-      description: "`ACCESS_DENIED` (роль SELLER) или `ORDER_OWNERSHIP_VIOLATION` (чужой заказ)"
+      description: "`ORDER_OWNERSHIP_VIOLATION` — заказ принадлежит другому пользователю"
       content:
         application/json:
           schema:
@@ -428,7 +368,6 @@ components:
         - PROMO_CODE_MIN_AMOUNT       # 422
         - ORDER_OWNERSHIP_VIOLATION   # 403
         - VALIDATION_ERROR            # 400
-        - ACCESS_DENIED               # 403
         - PROMO_CODE_ALREADY_EXISTS   # 409
         - NOT_FOUND                   # 404 (несуществующий путь)
         - INTERNAL_ERROR              # 500
@@ -448,11 +387,6 @@ components:
           nullable: true
           additionalProperties: true
           description: Дополнительные данные (например, список нарушений валидации или нехватки остатков)
-
-    # ---------- Пользователь ----------
-    Role:
-      type: string
-      enum: [USER, SELLER, ADMIN]
 
     # ---------- Products ----------
     ProductStatus:
@@ -524,7 +458,7 @@ components:
 
     ProductResponse:
       type: object
-      required: [id, name, description, price, stock, category, status, seller_id, created_at, updated_at]
+      required: [id, name, description, price, stock, category, status, created_at, updated_at]
       properties:
         id:
           type: string
@@ -547,9 +481,6 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/ProductStatus'
-        seller_id:
-          type: string
-          format: uuid
         created_at:
           type: string
           format: date-time

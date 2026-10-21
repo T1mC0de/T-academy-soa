@@ -34,10 +34,6 @@ func (e *AppError) withDetails(details map[string]any) *AppError {
 
 // --- Готовые ошибки, которые встречаются в нескольких местах ---
 
-func errAccessDenied() *AppError {
-	return newError(http.StatusForbidden, api.ACCESSDENIED, "insufficient permissions")
-}
-
 func errProductNotFound(id any) *AppError {
 	return newError(http.StatusNotFound, api.PRODUCTNOTFOUND, "product not found").
 		withDetails(map[string]any{"product_id": id})

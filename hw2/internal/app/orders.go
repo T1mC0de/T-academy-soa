@@ -19,10 +19,6 @@ import (
 
 func (s *Server) CreateOrder(ctx context.Context, req api.CreateOrderRequestObject) (api.CreateOrderResponseObject, error) {
 	userID := req.Params.XUserId
-	role := req.Params.XUserRole
-	if role == api.SELLER {
-		return nil, errAccessDenied()
-	}
 
 	// Все шаги — в одной транзакции. Если выйдем из функции без Commit,
 	// defer сделает Rollback, и в БД ничего не изменится.
@@ -119,17 +115,13 @@ func (s *Server) CreateOrder(ctx context.Context, req api.CreateOrderRequestObje
 
 func (s *Server) GetOrder(ctx context.Context, req api.GetOrderRequestObject) (api.GetOrderResponseObject, error) {
 	userID := req.Params.XUserId
-	role := req.Params.XUserRole
-	if role == api.SELLER {
-		return nil, errAccessDenied()
-	}
 
 	order, err := s.loadOrder(req.Id)
 	if err != nil {
 		return nil, err
 	}
-	// ADMIN видит любой заказ, USER — только свой.
-	if role != api.ADMIN && order.UserId != userID {
+	// Смотреть можно только свой заказ.
+	if order.UserId != userID {
 		return nil, errNotOwner()
 	}
 	return api.GetOrder200JSONResponse(order), nil
@@ -141,10 +133,6 @@ func (s *Server) GetOrder(ctx context.Context, req api.GetOrderRequestObject) (a
 
 func (s *Server) UpdateOrder(ctx context.Context, req api.UpdateOrderRequestObject) (api.UpdateOrderResponseObject, error) {
 	userID := req.Params.XUserId
-	role := req.Params.XUserRole
-	if role == api.SELLER {
-		return nil, errAccessDenied()
-	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -157,8 +145,8 @@ func (s *Server) UpdateOrder(ctx context.Context, req api.UpdateOrderRequestObje
 		return nil, err
 	}
 
-	// 1. Проверка владельца (ADMIN может менять любой заказ).
-	if role != api.ADMIN && order.userID != userID {
+	// 1. Проверка владельца.
+	if order.userID != userID {
 		return nil, errNotOwner()
 	}
 
@@ -239,10 +227,6 @@ func (s *Server) UpdateOrder(ctx context.Context, req api.UpdateOrderRequestObje
 
 func (s *Server) CancelOrder(ctx context.Context, req api.CancelOrderRequestObject) (api.CancelOrderResponseObject, error) {
 	userID := req.Params.XUserId
-	role := req.Params.XUserRole
-	if role == api.SELLER {
-		return nil, errAccessDenied()
-	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -256,7 +240,7 @@ func (s *Server) CancelOrder(ctx context.Context, req api.CancelOrderRequestObje
 	}
 
 	// 1. Проверка владельца.
-	if role != api.ADMIN && order.userID != userID {
+	if order.userID != userID {
 		return nil, errNotOwner()
 	}
 

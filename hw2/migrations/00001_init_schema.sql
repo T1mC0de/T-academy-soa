@@ -1,5 +1,5 @@
 -- Начальная схема маркетплейса.
--- Таблицы пользователей нет: user_id и seller_id приходят из заголовка X-User-Id.
+-- Таблицы пользователей нет: user_id приходит из заголовка X-User-Id.
 
 -- +goose Up
 -- Общая функция для автоматического обновления updated_at.
@@ -25,7 +25,6 @@ CREATE TABLE products (
     stock       INTEGER        NOT NULL CHECK (stock >= 0),
     category    VARCHAR(100)   NOT NULL,
     status      product_status NOT NULL,
-    seller_id   UUID           NOT NULL,
     created_at  TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ    NOT NULL DEFAULT now()
 );

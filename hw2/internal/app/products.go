@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/google/uuid"
-
 	"marketplace/internal/api"
 )
 
 // Колонки товара в том порядке, в котором их читает scanProduct.
-const productColumns = `id, name, description, price, stock, category, status, seller_id, created_at, updated_at`
+const productColumns = `id, name, description, price, stock, category, status, created_at, updated_at`
 
 // scanner — то, что умеет Scan: и *sql.Row (одна строка), и *sql.Rows (много строк).
 type scanner interface {
@@ -20,24 +18,18 @@ type scanner interface {
 
 func scanProduct(row scanner) (api.ProductResponse, error) {
 	var p api.ProductResponse
-	err := row.Scan(&p.Id, &p.Name, &p.Description, &p.Price, &p.Stock, &p.Category, &p.Status, &p.SellerId, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.Id, &p.Name, &p.Description, &p.Price, &p.Stock, &p.Category, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	return p, err
 }
 
 // POST /products
 func (s *Server) CreateProduct(ctx context.Context, req api.CreateProductRequestObject) (api.CreateProductResponseObject, error) {
-	userID := req.Params.XUserId
-	role := req.Params.XUserRole
-	if role != api.SELLER && role != api.ADMIN {
-		return nil, errAccessDenied()
-	}
-
 	b := req.Body
 	product, err := scanProduct(s.db.QueryRow(
-		`INSERT INTO products (name, description, price, stock, category, status, seller_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO products (name, description, price, stock, category, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING `+productColumns,
-		b.Name, b.Description, b.Price, b.Stock, b.Category, b.Status, userID,
+		b.Name, b.Description, b.Price, b.Stock, b.Category, b.Status,
 	))
 	if err != nil {
 		return nil, err
@@ -111,10 +103,6 @@ func (s *Server) ListProducts(ctx context.Context, req api.ListProductsRequestOb
 
 // PUT /products/{id} — полная замена полей товара.
 func (s *Server) UpdateProduct(ctx context.Context, req api.UpdateProductRequestObject) (api.UpdateProductResponseObject, error) {
-	if err := s.checkProductAccess(req.Params.XUserId, req.Params.XUserRole, req.Id); err != nil {
-		return nil, err
-	}
-
 	b := req.Body
 	product, err := scanProduct(s.db.QueryRow(
 		`UPDATE products
@@ -123,6 +111,9 @@ func (s *Server) UpdateProduct(ctx context.Context, req api.UpdateProductRequest
 		 RETURNING `+productColumns,
 		req.Id, b.Name, b.Description, b.Price, b.Stock, b.Category, b.Status,
 	))
+	if errors.Is(err, sql.ErrNoRows) { // UPDATE не нашёл строку с таким id
+		return nil, errProductNotFound(req.Id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -131,35 +122,13 @@ func (s *Server) UpdateProduct(ctx context.Context, req api.UpdateProductRequest
 
 // DELETE /products/{id} — мягкое удаление: запись остаётся, статус становится ARCHIVED.
 func (s *Server) DeleteProduct(ctx context.Context, req api.DeleteProductRequestObject) (api.DeleteProductResponseObject, error) {
-	if err := s.checkProductAccess(req.Params.XUserId, req.Params.XUserRole, req.Id); err != nil {
-		return nil, err
-	}
-
 	product, err := scanProduct(s.db.QueryRow(
 		`UPDATE products SET status = 'ARCHIVED' WHERE id = $1 RETURNING `+productColumns, req.Id))
+	if errors.Is(err, sql.ErrNoRows) { // UPDATE не нашёл строку с таким id
+		return nil, errProductNotFound(req.Id)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return api.DeleteProduct200JSONResponse(product), nil
-}
-
-// checkProductAccess: ADMIN может менять любой товар, SELLER — только свой, USER — никакой.
-func (s *Server) checkProductAccess(userID uuid.UUID, role api.Role, productID uuid.UUID) error {
-	if role != api.SELLER && role != api.ADMIN {
-		return errAccessDenied()
-	}
-
-	var sellerID uuid.UUID
-	err := s.db.QueryRow(`SELECT seller_id FROM products WHERE id = $1`, productID).Scan(&sellerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return errProductNotFound(productID)
-	}
-	if err != nil {
-		return err
-	}
-
-	if role == api.SELLER && sellerID != userID {
-		return errAccessDenied()
-	}
-	return nil
 }
