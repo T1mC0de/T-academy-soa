@@ -11,8 +11,6 @@ make psql                          # консоль БД для SELECT
 
 Если порт 8080 занят: `APP_PORT=18080 docker compose up --build`.
 
-Пошаговый сценарий демонстрации — в [DEMO.md](DEMO.md).
-
 Аутентификации (JWT, логина, регистрации) в этом ДЗ нет. Кто делает запрос, передаётся заголовками:
 
 ```
@@ -42,7 +40,6 @@ internal/app/
   promo_codes.go              # промокоды и расчёт скидки
 migrations/                   # goose: 00001_init_schema.sql (+ embed.go)
 cmd/marketplace/main.go       # конфиг из env, подключение к БД, запуск HTTP
-DEMO.md                       # сценарий демонстрации вручную
 ```
 
 ## Путь запроса
