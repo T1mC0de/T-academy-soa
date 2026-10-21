@@ -1,0 +1,9 @@
+# Конфиг oapi-codegen: из api/openapi.yaml генерируются модели (DTO),
+# интерфейс сервера под net/http (strict-режим) и встроенная спецификация для валидатора.
+package: api
+output: api.gen.go
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
+  embedded-spec: true

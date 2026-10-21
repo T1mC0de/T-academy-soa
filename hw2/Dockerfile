@@ -1,0 +1,13 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Код из OpenAPI генерируется при сборке (в git его нет), затем собирается бинарник.
+RUN go generate ./... && CGO_ENABLED=0 go build -o /out/marketplace ./cmd/marketplace
+
+FROM alpine:3.22
+COPY --from=build /out/marketplace /app/marketplace
+USER nobody
+EXPOSE 8080
+ENTRYPOINT ["/app/marketplace"]

@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: marketplace
+      POSTGRES_USER: marketplace
+      POSTGRES_PASSWORD: marketplace
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketplace -d marketplace"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://marketplace:marketplace@postgres:5432/marketplace
+      JWT_SECRET: super-secret-key-for-homework
+      ORDER_RATE_LIMIT_MINUTES: ${ORDER_RATE_LIMIT_MINUTES:-1}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    # Миграции goose применяет само приложение при старте, поэтому ждём только готовности Postgres.
+    depends_on:
+      postgres:
+        condition: service_healthy

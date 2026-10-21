@@ -1,0 +1,2 @@
+# Сгенерированный из api/openapi.yaml код: создаётся командой `go generate ./...`
+internal/api/api.gen.go

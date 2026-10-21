@@ -1,0 +1,916 @@
+openapi: 3.0.3
+info:
+  title: Marketplace API
+  version: 1.0.0
+  description: |
+    API маркетплейса: товары, заказы, промокоды, авторизация.
+
+    Все эндпоинты, кроме `/auth/*`, требуют заголовок `Authorization: Bearer <access_token>`.
+    Роль пользователя берётся из claim `role` JWT-токена (`USER`, `SELLER`, `ADMIN`).
+
+    Матрица доступа:
+
+    | Операция                   | USER        | SELLER      | ADMIN       |
+    |----------------------------|-------------|-------------|-------------|
+    | `GET /products`            | Все товары  | Все товары  | Все товары  |
+    | `GET /products/{id}`       | Любой товар | Любой товар | Любой товар |
+    | `POST /products`           | Запрещено   | Только свои | Любые       |
+    | `PUT /products/{id}`       | Запрещено   | Только свои | Любые       |
+    | `DELETE /products/{id}`    | Запрещено   | Только свои | Любые       |
+    | `POST /orders`             | Да          | Запрещено   | Да          |
+    | `GET /orders/{id}`         | Только свои | Запрещено   | Любые       |
+    | `PUT /orders/{id}`         | Только свои | Запрещено   | Любые       |
+    | `POST /orders/{id}/cancel` | Только свои | Запрещено   | Любые       |
+    | `POST /promo-codes`        | Запрещено   | Да          | Да          |
+
+# По умолчанию все операции требуют JWT. Для /auth/* переопределено на `security: []`.
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+  - name: products
+  - name: orders
+  - name: promo-codes
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Регистрация пользователя
+      description: Можно зарегистрироваться с ролью `USER` (по умолчанию) или `SELLER`. Пользователь `ADMIN` создаётся миграцией.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: "`EMAIL_ALREADY_EXISTS`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Аутентификация, возвращает access + refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: "`INVALID_CREDENTIALS`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refresh
+      summary: Обновление access token по refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: "`REFRESH_TOKEN_INVALID`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products:
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Создание товара
+      description: "Роли: `SELLER` (товар создаётся от его имени), `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '201':
+          description: Товар создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: Список товаров с пагинацией и фильтрацией
+      description: "Роли: все."
+      parameters:
+        - name: page
+          in: query
+          description: Номер страницы, начиная с 0
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          description: Размер страницы
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ProductStatus'
+        - name: category
+          in: query
+          description: Точное совпадение категории
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: Страница товаров
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /products/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Получение товара по ID
+      description: "Роли: все."
+      responses:
+        '200':
+          description: Товар
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+    put:
+      tags: [products]
+      operationId: updateProduct
+      summary: Обновление товара
+      description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductUpdate'
+      responses:
+        '200':
+          description: Обновлённый товар
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: Мягкое удаление (перевод в статус ARCHIVED)
+      description: "Роли: `SELLER` (только свои товары), `ADMIN` (любые). Запись не удаляется, статус меняется на `ARCHIVED`."
+      responses:
+        '200':
+          description: Товар в статусе ARCHIVED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+
+  /orders:
+    post:
+      tags: [orders]
+      operationId: createOrder
+      summary: Создание заказа
+      description: "Роли: `USER`, `ADMIN`. `SELLER` → 403 `ACCESS_DENIED`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreate'
+      responses:
+        '201':
+          description: Заказ создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ProductNotFound'
+        '409':
+          description: "`ORDER_HAS_ACTIVE`, `PRODUCT_INACTIVE`, `INSUFFICIENT_STOCK`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/PromoError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /orders/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Получение заказа по ID
+      description: "Роли: `USER` (только свои), `ADMIN` (любые). `SELLER` → 403 `ACCESS_DENIED`."
+      responses:
+        '200':
+          description: Заказ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+    put:
+      tags: [orders]
+      operationId: updateOrder
+      summary: Обновление позиций заказа
+      description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено только в статусе `CREATED`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderUpdate'
+      responses:
+        '200':
+          description: Обновлённый заказ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          description: "`ORDER_NOT_FOUND`, `PRODUCT_NOT_FOUND`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: "`INVALID_STATE_TRANSITION`, `PRODUCT_INACTIVE`, `INSUFFICIENT_STOCK`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /orders/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [orders]
+      operationId: cancelOrder
+      summary: Отмена заказа
+      description: "Роли: `USER` (только свои), `ADMIN` (любые). Разрешено из статусов `CREATED`, `PAYMENT_PENDING`."
+      responses:
+        '200':
+          description: Заказ отменён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OrderForbidden'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '409':
+          description: "`INVALID_STATE_TRANSITION`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /promo-codes:
+    post:
+      tags: [promo-codes]
+      operationId: createPromoCode
+      summary: Создание промокода
+      description: "Роли: `SELLER`, `ADMIN`. `USER` → 403 `ACCESS_DENIED`."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeCreate'
+      responses:
+        '201':
+          description: Промокод создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "`PROMO_CODE_ALREADY_EXISTS`"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Access token (живёт 15 минут). Claims: `sub` — id пользователя, `role` — роль, `type` — `access`."
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    ValidationError:
+      description: "`VALIDATION_ERROR` — в `details.errors` список полей и нарушений"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error_code: VALIDATION_ERROR
+            message: request validation failed
+            details:
+              errors:
+                - field: price
+                  message: number must be at least 0.01
+    Unauthorized:
+      description: "`TOKEN_EXPIRED` или `TOKEN_INVALID`"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: "`ACCESS_DENIED` — недостаточно прав"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    OrderForbidden:
+      description: "`ACCESS_DENIED` (роль SELLER) или `ORDER_OWNERSHIP_VIOLATION` (чужой заказ)"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ProductNotFound:
+      description: "`PRODUCT_NOT_FOUND`"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    OrderNotFound:
+      description: "`ORDER_NOT_FOUND`"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PromoError:
+      description: "`PROMO_CODE_INVALID` или `PROMO_CODE_MIN_AMOUNT`"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: "`ORDER_LIMIT_EXCEEDED`"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    # ---------- Ошибки ----------
+    ErrorCode:
+      type: string
+      enum:
+        - PRODUCT_NOT_FOUND           # 404
+        - PRODUCT_INACTIVE            # 409
+        - ORDER_NOT_FOUND             # 404
+        - ORDER_LIMIT_EXCEEDED        # 429
+        - ORDER_HAS_ACTIVE            # 409
+        - INVALID_STATE_TRANSITION    # 409
+        - INSUFFICIENT_STOCK          # 409
+        - PROMO_CODE_INVALID          # 422
+        - PROMO_CODE_MIN_AMOUNT       # 422
+        - ORDER_OWNERSHIP_VIOLATION   # 403
+        - VALIDATION_ERROR            # 400
+        - TOKEN_EXPIRED               # 401
+        - TOKEN_INVALID               # 401
+        - REFRESH_TOKEN_INVALID       # 401
+        - INVALID_CREDENTIALS         # 401
+        - ACCESS_DENIED               # 403
+        - EMAIL_ALREADY_EXISTS        # 409
+        - PROMO_CODE_ALREADY_EXISTS   # 409
+        - NOT_FOUND                   # 404 (несуществующий путь)
+        - INTERNAL_ERROR              # 500
+
+    Error:
+      type: object
+      description: Единый формат ошибки
+      required: [error_code, message]
+      properties:
+        error_code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: Человекочитаемое описание
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Дополнительные данные (например, список нарушений валидации или нехватки остатков)
+
+    # ---------- Auth ----------
+    Role:
+      type: string
+      enum: [USER, SELLER, ADMIN]
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 6
+          maxLength: 72
+        role:
+          type: string
+          description: Роль. ADMIN через регистрацию получить нельзя.
+          enum: [USER, SELLER]
+          default: USER
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 1
+          maxLength: 72
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Время жизни access token в секундах
+
+    UserResponse:
+      type: object
+      required: [id, email, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+
+    # ---------- Products ----------
+    ProductStatus:
+      type: string
+      enum: [ACTIVE, INACTIVE, ARCHIVED]
+
+    ProductCreate:
+      type: object
+      required: [name, price, stock, category, status]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+          maxLength: 4000
+        price:
+          type: number
+          format: decimal
+          minimum: 0.01
+          maximum: 9999999999.99
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        stock:
+          type: integer
+          format: int32
+          minimum: 0
+        category:
+          type: string
+          minLength: 1
+          maxLength: 100
+        status:
+          $ref: '#/components/schemas/ProductStatus'
+
+    ProductUpdate:
+      type: object
+      description: Полное обновление товара (PUT) — передаются все поля.
+      required: [name, price, stock, category, status]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+          maxLength: 4000
+        price:
+          type: number
+          format: decimal
+          minimum: 0.01
+          maximum: 9999999999.99
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        stock:
+          type: integer
+          format: int32
+          minimum: 0
+        category:
+          type: string
+          minLength: 1
+          maxLength: 100
+        status:
+          $ref: '#/components/schemas/ProductStatus'
+
+    ProductResponse:
+      type: object
+      required: [id, name, description, price, stock, category, status, seller_id, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        price:
+          type: number
+          format: decimal
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        stock:
+          type: integer
+          format: int32
+        category:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProductStatus'
+        seller_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ProductPage:
+      type: object
+      required: [items, totalElements, page, size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductResponse'
+        totalElements:
+          type: integer
+          format: int64
+        page:
+          type: integer
+          format: int32
+        size:
+          type: integer
+          format: int32
+
+    # ---------- Orders ----------
+    OrderStatus:
+      type: string
+      enum: [CREATED, PAYMENT_PENDING, PAID, SHIPPED, COMPLETED, CANCELED]
+
+    OrderItemRequest:
+      type: object
+      required: [product_id, quantity]
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 999
+
+    OrderCreate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/OrderItemRequest'
+        promo_code:
+          type: string
+          pattern: '^[A-Z0-9_]{4,20}$'
+
+    OrderUpdate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/OrderItemRequest'
+
+    OrderItemResponse:
+      type: object
+      required: [id, product_id, quantity, price_at_order]
+      properties:
+        id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          format: int32
+        price_at_order:
+          type: number
+          format: decimal
+          description: Цена за единицу на момент заказа
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+
+    OrderResponse:
+      type: object
+      required: [id, user_id, status, promo_code_id, items, total_amount, discount_amount, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        promo_code_id:
+          type: string
+          format: uuid
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItemResponse'
+        total_amount:
+          type: number
+          format: decimal
+          description: Итог с учётом скидки
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        discount_amount:
+          type: number
+          format: decimal
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ---------- Promo codes ----------
+    DiscountType:
+      type: string
+      enum: [PERCENTAGE, FIXED_AMOUNT]
+
+    PromoCodeCreate:
+      type: object
+      required: [code, discount_type, discount_value, min_order_amount, max_uses, valid_from, valid_until]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z0-9_]{4,20}$'
+        discount_type:
+          $ref: '#/components/schemas/DiscountType'
+        discount_value:
+          type: number
+          format: decimal
+          description: Процент (0.01–100) для PERCENTAGE или сумма для FIXED_AMOUNT
+          minimum: 0.01
+          maximum: 9999999999.99
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        min_order_amount:
+          type: number
+          format: decimal
+          minimum: 0
+          maximum: 9999999999.99
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        max_uses:
+          type: integer
+          format: int32
+          minimum: 1
+        valid_from:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          default: true
+
+    PromoCodeResponse:
+      type: object
+      required: [id, code, discount_type, discount_value, min_order_amount, max_uses, current_uses, valid_from, valid_until, active]
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        discount_type:
+          $ref: '#/components/schemas/DiscountType'
+        discount_value:
+          type: number
+          format: decimal
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        min_order_amount:
+          type: number
+          format: decimal
+          x-go-type: decimal.Decimal
+          x-go-type-import:
+            path: github.com/shopspring/decimal
+        max_uses:
+          type: integer
+          format: int32
+        current_uses:
+          type: integer
+          format: int32
+        valid_from:
+          type: string
+          format: date-time
+        valid_until:
+          type: string
+          format: date-time
+        active:
+          type: boolean
